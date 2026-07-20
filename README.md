@@ -18,19 +18,19 @@
 
 ## Структура репозитория
 
-📁 documentation
+[папка] documentation
 - BRD
 - SRS
 
-📁 diagrams
+[папка] diagrams
 - BPMN
 - UML Use Case
 - UML Sequence
 
-📁 Data Model
+[папка]  Data Model
 - ER-diagram
   
-📁 api
+[папка] api
 - OpenAPI 3.0 Specification (YAML)
 
 ---
