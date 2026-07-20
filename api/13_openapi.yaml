@@ -1,0 +1,281 @@
+openapi: 3.1.0
+info:
+  title: Nomad Telecom — Tariff Connection API
+  version: "1.0.0"
+  description: >
+    Спецификация внешних интерфейсов, используемых модулем self-service
+    подключения тарифов (см. SRS, раздел 5). Документирует три группы
+    операций: CRM (каталог и совместимость), Биллинг (баланс и активация,
+    включая асинхронный webhook с результатом) и SMS Gateway (уведомления).
+  contact:
+    name: Системный аналитик
+tags:
+  - name: CRM
+    description: Каталог тарифов и проверка совместимости
+  - name: Billing
+    description: Проверка баланса и активация услуг
+  - name: SMS Gateway
+    description: Отправка SMS-уведомлений
+
+servers:
+  - url: https://api.nomadtelecom.kz/v1
+
+paths:
+
+  # --- CRM ---
+  /tariffs:
+    get:
+      operationId: getAvailableTariffs
+      tags: [CRM]
+      summary: Получить список тарифов, доступных абоненту (FR-01)
+      parameters:
+        - name: subscriberId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Список доступных тарифов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Tariff" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /compatibility/check:
+    post:
+      operationId: checkCompatibility
+      tags: [CRM]
+      summary: Проверить совместимость тарифа с текущим подключением (FR-03, FR-04)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompatibilityCheckRequest" }
+      responses:
+        "200":
+          description: Результат проверки совместимости
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CompatibilityCheckResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  # --- Billing ---
+  /balance/check:
+    get:
+      operationId: checkBalance
+      tags: [Billing]
+      summary: Проверить достаточность баланса для платной услуги (FR-05, FR-06)
+      parameters:
+        - name: subscriberId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: tariffId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Результат проверки баланса
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BalanceCheckResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /activations:
+    post:
+      operationId: activateService
+      tags: [Billing]
+      summary: >
+        Инициировать активацию тарифа/услуги (FR-08). Операция асинхронная:
+        ответ 202 подтверждает только приём запроса. Финальный результат
+        приходит отдельно через webhook activationResult (см. раздел webhooks).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivationRequest" }
+      responses:
+        "202":
+          description: Запрос на активацию принят в обработку
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivationAcceptedResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /requests/{requestId}/status:
+    get:
+      operationId: getRequestStatus
+      tags: [Billing]
+      summary: >
+        Получить текущий статус заявки (FR-13). Резервный способ,
+        если webhook activationResult не пришёл в ожидаемый срок.
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Текущий статус заявки
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RequestStatusResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --- SMS Gateway ---
+  /messages:
+    post:
+      operationId: sendSms
+      tags: [SMS Gateway]
+      summary: Отправить SMS-уведомление абоненту (FR-10)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SendSmsRequest" }
+      responses:
+        "202":
+          description: SMS принято в очередь на отправку (fire-and-forget)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SendSmsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+# --- Webhook: Биллинг -> Приложение (FR-09.1) ---
+webhooks:
+  activationResult:
+    post:
+      operationId: receiveActivationResult
+      summary: >
+        Callback от Биллинга с финальным результатом активации (FR-09.1).
+        Инициатор вызова — Биллинг; Приложение обязано подтверждать приём
+        немедленным 200 OK и проверять подпись запроса (см. SRS, п. 5.2.1).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivationResultPayload" }
+      responses:
+        "200":
+          description: Callback успешно принят Приложением
+
+components:
+
+  schemas:
+
+    Tariff:
+      type: object
+      properties:
+        tariffId: { type: string }
+        name: { type: string, example: "Смарт 5000" }
+        price: { type: number, format: double, example: 5000.0 }
+        type: { type: string, enum: [VOICE, DATA, SMS, BUNDLE] }
+        description: { type: string }
+        isActive: { type: boolean }
+      required: [tariffId, name, price, type, isActive]
+
+    CompatibilityCheckRequest:
+      type: object
+      properties:
+        subscriberId: { type: string }
+        tariffId: { type: string }
+      required: [subscriberId, tariffId]
+
+    CompatibilityCheckResponse:
+      type: object
+      properties:
+        compatible: { type: boolean }
+        conflictingTariffId:
+          type: string
+          nullable: true
+          description: Заполняется, если compatible=false
+      required: [compatible]
+
+    BalanceCheckResponse:
+      type: object
+      properties:
+        balanceEnough: { type: boolean }
+        currentBalance: { type: number, format: double }
+        missingAmount:
+          type: number
+          format: double
+          nullable: true
+          description: Заполняется, если balanceEnough=false (FR-06)
+      required: [balanceEnough, currentBalance]
+
+    ActivationRequest:
+      type: object
+      properties:
+        subscriberId: { type: string }
+        tariffId: { type: string }
+      required: [subscriberId, tariffId]
+
+    ActivationAcceptedResponse:
+      type: object
+      properties:
+        requestId: { type: string }
+        status:
+          type: string
+          enum: [PENDING]
+      required: [requestId, status]
+
+    ActivationResultPayload:
+      type: object
+      properties:
+        requestId: { type: string }
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        failureReason:
+          type: string
+          nullable: true
+          description: Заполняется, если status=FAILED (FR-11)
+      required: [requestId, status]
+
+    RequestStatusResponse:
+      type: object
+      properties:
+        requestId: { type: string }
+        status:
+          type: string
+          enum: [PENDING, SUCCESS, FAILED, REJECTED_COMPATIBILITY, REJECTED_BALANCE]
+        updatedAt: { type: string, format: date-time }
+      required: [requestId, status, updatedAt]
+
+    SendSmsRequest:
+      type: object
+      properties:
+        phoneNumber: { type: string, example: "+77771234567" }
+        message: { type: string }
+      required: [phoneNumber, message]
+
+    SendSmsResponse:
+      type: object
+      properties:
+        messageId: { type: string }
+        status:
+          type: string
+          enum: [QUEUED]
+      required: [messageId, status]
+
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+      required: [code, message]
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
